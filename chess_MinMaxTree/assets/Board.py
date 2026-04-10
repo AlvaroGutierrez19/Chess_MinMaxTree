@@ -1,6 +1,142 @@
 from ChessPiece import *
 from copy import deepcopy
 
+# Piece-square tables — two phases per piece.
+# row 0 = own back rank, row 7 = opponent back rank (mirrored for black in evaluate()).
+# Values in centipawns. Material: pawn=100, knight/bishop=300, rook=500, queen=900.
+# Phase is interpolated: 1.0 = full opening material, 0.0 = pure endgame.
+
+_PST_MG = {   # middlegame
+    'pawn': [
+        [ 0,  0,  0,  0,  0,  0,  0,  0],
+        [-5, -5,  0,  0,  0,  0, -5, -5],
+        [ 0,  0,  0, 10, 10,  0,  0,  0],
+        [ 0,  5,  5, 20, 20,  5,  5,  0],
+        [ 5, 10, 10, 25, 25, 10, 10,  5],
+        [10, 15, 20, 30, 30, 20, 15, 10],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [ 0,  0,  0,  0,  0,  0,  0,  0],
+    ],
+    'knight': [
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+    ],
+    'bishop': [
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5, 10, 10,  5,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+    ],
+    'rook': [
+        [ 0,  0,  0,  0,  0,  0,  0,  0],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [ 5, 10, 10, 10, 10, 10, 10,  5],
+        [ 0,  0,  0,  5,  5,  0,  0,  0],
+    ],
+    'queen': [
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+        [-10,  0,  5,  0,  0,  0,  0,-10],
+        [-10,  5,  5,  5,  5,  5,  0,-10],
+        [  0,  0,  5,  5,  5,  5,  0, -5],
+        [ -5,  0,  5,  5,  5,  5,  0, -5],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+    ],
+    # King hides behind pawns in the middlegame
+    'king': [
+        [ 30, 40, 10,  0,  0, 10, 40, 30],
+        [ 20, 20,  0,  0,  0,  0, 20, 20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+    ],
+}
+
+_PST_EG = {   # endgame
+    'pawn': [
+        [ 0,  0,  0,  0,  0,  0,  0,  0],
+        [ 0,  0,  0,  0,  0,  0,  0,  0],
+        [ 5,  5,  5,  5,  5,  5,  5,  5],
+        [10, 10, 10, 10, 10, 10, 10, 10],
+        [20, 20, 20, 20, 20, 20, 20, 20],
+        [35, 35, 35, 35, 35, 35, 35, 35],
+        [60, 60, 60, 60, 60, 60, 60, 60],
+        [ 0,  0,  0,  0,  0,  0,  0,  0],
+    ],
+    'knight': [
+        [-50,-40,-30,-20,-20,-30,-40,-50],
+        [-30,-20,  0,  0,  0,  0,-20,-30],
+        [-20,  0, 10, 15, 15, 10,  0,-20],
+        [-20,  5, 15, 20, 20, 15,  5,-20],
+        [-20,  0, 15, 20, 20, 15,  0,-20],
+        [-20,  5, 10, 15, 15, 10,  5,-20],
+        [-30,-20,  0,  5,  5,  0,-20,-30],
+        [-50,-40,-30,-20,-20,-30,-40,-50],
+    ],
+    'bishop': [
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  8,  8,  5,  0,-10],
+        [-10,  5,  5,  8,  8,  5,  5,-10],
+        [-10,  0,  8,  8,  8,  8,  0,-10],
+        [-10,  8,  8,  8,  8,  8,  8,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+    ],
+    'rook': [
+        [ 0,  0,  0,  5,  5,  0,  0,  0],
+        [ 5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [ 0,  0,  0,  0,  0,  0,  0,  0],
+    ],
+    'queen': [
+        [-30,-20,-10,  0,  0,-10,-20,-30],
+        [-20,-10,  0,  0,  0,  0,-10,-20],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [  0,  0,  5, 10, 10,  5,  0,  0],
+        [  0,  0,  5, 10, 10,  5,  0,  0],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [-20,-10,  0,  0,  0,  0,-10,-20],
+        [-30,-20,-10,  0,  0,-10,-20,-30],
+    ],
+    # King centralises aggressively in the endgame
+    'king': [
+        [-50,-30,-20,-10,-10,-20,-30,-50],
+        [-30,-20,  0,  0,  0,  0,-20,-30],
+        [-20,  0, 10, 20, 20, 10,  0,-20],
+        [-10,  0, 20, 30, 30, 20,  0,-10],
+        [-10,  0, 20, 30, 30, 20,  0,-10],
+        [-20,  0, 10, 20, 20, 10,  0,-20],
+        [-30,-20,  0,  0,  0,  0,-20,-30],
+        [-50,-30,-20,-10,-10,-20,-30,-50],
+    ],
+}
+
+# Max material per side excluding kings (used to compute phase)
+_MAX_PHASE = 8*100 + 2*300 + 2*300 + 2*500 + 900   # pawns+knights+bishops+rooks+queen
+
 class Board:
     whites = []
     blacks = []
@@ -316,18 +452,50 @@ class Board:
                 return True
         return False
 
+    def _game_phase(self):
+        """
+        Returns a float in [0.0, 1.0].
+        1.0 = full opening material on board, 0.0 = pure king endgame.
+        Excludes kings from the count (they're always present).
+        """
+        material = 0
+        for row in self.board:
+            for sq in row:
+                if isinstance(sq, ChessPiece) and sq.type != 'king':
+                    material += sq.get_score() * 10
+        # Both sides combined → double the per-side max
+        return min(material / (_MAX_PHASE * 2), 1.0)
+
     def evaluate(self):
+        # Terminal states: stalemate is a draw (0), checkmate is decisive
+        if self.white_won(): return  9999
+        if self.black_won(): return -9999
+        if self.draw():      return  0
+
+        ai_color = "black" if self.game_mode == 0 else "white"
+        phase    = self._game_phase()   # 1.0 = opening, 0.0 = endgame
+
         white_points = 0
         black_points = 0
-        for i in range(8):
-            for j in range(8):
-                if isinstance(self[i][j], ChessPiece):
-                    piece = self[i][j]
-                    if piece.color == "white":
-                        white_points += piece.get_score()
-                    else:
-                        black_points += piece.get_score()
-        if self.game_mode == 0:
+        for row in range(8):
+            for col in range(8):
+                piece = self[row][col]
+                if not isinstance(piece, ChessPiece):
+                    continue
+                # Mirror row for black so row 0 = own back rank for both colors
+                pst_row = row if piece.color == "white" else 7 - row
+                empty   = [[0] * 8 for _ in range(8)]
+                mg = _PST_MG.get(piece.type, empty)[pst_row][col]
+                eg = _PST_EG.get(piece.type, empty)[pst_row][col]
+                # Taper: blend middlegame and endgame tables by current phase
+                pst_bonus = phase * mg + (1 - phase) * eg
+                score = piece.get_score() * 10 + pst_bonus
+                if piece.color == "white":
+                    white_points += score
+                else:
+                    black_points += score
+
+        if ai_color == "black":
             return black_points - white_points
         return white_points - black_points
 
