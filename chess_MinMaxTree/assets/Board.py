@@ -137,6 +137,9 @@ _PST_EG = {   # endgame
 # Max material per side excluding kings (used to compute phase)
 _MAX_PHASE = 8*100 + 2*300 + 2*300 + 2*500 + 900   # pawns+knights+bishops+rooks+queen
 
+# Fallback PST (all zeros) for piece types not in the tables
+_EMPTY_PST = [[0] * 8 for _ in range(8)]
+
 class Board:
     whites = []
     blacks = []
@@ -484,9 +487,8 @@ class Board:
                     continue
                 # Mirror row for black so row 0 = own back rank for both colors
                 pst_row = row if piece.color == "white" else 7 - row
-                empty   = [[0] * 8 for _ in range(8)]
-                mg = _PST_MG.get(piece.type, empty)[pst_row][col]
-                eg = _PST_EG.get(piece.type, empty)[pst_row][col]
+                mg = _PST_MG.get(piece.type, _EMPTY_PST)[pst_row][col]
+                eg = _PST_EG.get(piece.type, _EMPTY_PST)[pst_row][col]
                 # Taper: blend middlegame and endgame tables by current phase
                 pst_bonus = phase * mg + (1 - phase) * eg
                 score = piece.get_score() * 10 + pst_bonus

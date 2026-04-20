@@ -5,24 +5,43 @@ INF = float('inf')
 # Set to True to print AI thought process each move
 DEBUG = True
 
+# Piece values used for MVV-LVA move ordering
+_PIECE_VALUES = {
+    'pawn': 100, 'knight': 300, 'bishop': 300,
+    'rook': 500, 'queen': 900, 'king': 20000,
+}
+
+
+def _move_order_score(piece, x, y, board):
+    """Higher score = try this move first. Captures ordered by MVV-LVA."""
+    target = board[x][y]
+    if isinstance(target, ChessPiece):
+        # Prefer capturing high-value pieces with low-value pieces
+        return 10000 + _PIECE_VALUES.get(target.type, 0) - _PIECE_VALUES.get(piece.type, 0)
+    return 0
+
 
 def get_all_moves(board, color):
-    """Return list of (piece, x, y) for every legal move of the given color."""
+    """Return list of (piece, x, y) for every legal move, captures ordered first."""
     moves = []
     pieces = board.whites if color == "white" else board.blacks
     for piece in list(pieces):
         if board[piece.x][piece.y] is not piece:
             continue
-        for move in piece.filter_moves(piece.get_moves(board), board):
-            moves.append((piece, move[0], move[1]))
-    return moves
+        for x, y in piece.filter_moves(piece.get_moves(board), board):
+            moves.append((_move_order_score(piece, x, y, board), piece, x, y))
+    moves.sort(key=lambda m: -m[0])
+    return [(p, x, y) for _, p, x, y in moves]
 
 
 def _board_key(board):
-    return tuple(
-        (sq.type, sq.color, sq.x, sq.y)
-        if isinstance(sq, ChessPiece) else None
-        for row in board.board for sq in row
+    """Compact board key: piece type/color/moved per square + en-passant target."""
+    return (
+        tuple(
+            (sq.type, sq.color, sq.moved) if isinstance(sq, ChessPiece) else None
+            for row in board.board for sq in row
+        ),
+        board.en_passant_target,
     )
 
 
@@ -43,12 +62,13 @@ def _move_label(piece, from_y, to_x, to_y, captured):
     return note
 
 
-def minimax(board, depth, initial_depth, alpha, beta, maximizing, seen):
+def minimax(board, depth, initial_depth, alpha, beta, maximizing, seen, tt):
     """
     Returns (score, pv) where pv is a list of (piece, from_x, from_y, to_x, to_y, captured).
     - depth:         plies remaining
     - initial_depth: total search depth (used to prefer faster mates)
-    - seen:          dict {board_key: count} for repetition detection
+    - seen:          dict {board_key: count} for repetition detection on the current path
+    - tt:            transposition table shared across the whole search
     """
     key = _board_key(board)
     if seen.get(key, 0) >= 2:
@@ -61,6 +81,20 @@ def minimax(board, depth, initial_depth, alpha, beta, maximizing, seen):
         elif score < -9000:
             score += (initial_depth - depth)
         return score, []
+
+    # Transposition table lookup
+    orig_alpha = alpha
+    if key in tt:
+        tt_depth, tt_score, tt_flag = tt[key]
+        if tt_depth >= depth:
+            if tt_flag == 'exact':
+                return tt_score, []
+            elif tt_flag == 'lower':
+                alpha = max(alpha, tt_score)
+            elif tt_flag == 'upper':
+                beta = min(beta, tt_score)
+            if alpha >= beta:
+                return tt_score, []
 
     ai_color    = "black" if board.game_mode == 0 else "white"
     human_color = "white" if board.game_mode == 0 else "black"
@@ -75,7 +109,7 @@ def minimax(board, depth, initial_depth, alpha, beta, maximizing, seen):
             from_x, from_y = piece.x, piece.y
             captured = isinstance(board[x][y], ChessPiece)
             board.make_move(piece, x, y, keep_history=True)
-            score, rest_pv = minimax(board, depth - 1, initial_depth, alpha, beta, False, seen)
+            score, rest_pv = minimax(board, depth - 1, initial_depth, alpha, beta, False, seen, tt)
             board.unmake_move(piece)
             if score > best_score:
                 best_score = score
@@ -89,7 +123,7 @@ def minimax(board, depth, initial_depth, alpha, beta, maximizing, seen):
             from_x, from_y = piece.x, piece.y
             captured = isinstance(board[x][y], ChessPiece)
             board.make_move(piece, x, y, keep_history=True)
-            score, rest_pv = minimax(board, depth - 1, initial_depth, alpha, beta, True, seen)
+            score, rest_pv = minimax(board, depth - 1, initial_depth, alpha, beta, True, seen, tt)
             board.unmake_move(piece)
             if score < best_score:
                 best_score = score
@@ -99,6 +133,15 @@ def minimax(board, depth, initial_depth, alpha, beta, maximizing, seen):
                 break
 
     seen[key] -= 1
+
+    # Store result in transposition table
+    if best_score <= orig_alpha:
+        tt[key] = (depth, best_score, 'upper')
+    elif best_score >= beta:
+        tt[key] = (depth, best_score, 'lower')
+    else:
+        tt[key] = (depth, best_score, 'exact')
+
     return best_score, best_pv
 
 
@@ -131,28 +174,26 @@ def get_best_move(board):
     Return (piece, x, y) for the best AI move.
     If DEBUG is True, print all candidate moves with scores and the full PV.
     """
-    seen = {}
-    ai_color    = "black" if board.game_mode == 0 else "white"
-    human_color = "white" if board.game_mode == 0 else "black"
+    tt = {}  # transposition table, shared across the entire search
+    ai_color = "black" if board.game_mode == 0 else "white"
 
     if not DEBUG:
-        _, pv = minimax(board, board.depth, board.depth, -INF, INF, True, seen)
+        _, pv = minimax(board, board.depth, board.depth, -INF, INF, True, {}, tt)
         if not pv:
             return None
         _, _, _, tx, ty, _ = pv[0]
         return pv[0][0], tx, ty
 
-    # Debug: evaluate every root move individually to get per-move scores
+    # Debug: evaluate every root move individually to get per-move scores.
+    # The TT is shared so later root moves benefit from nodes computed earlier.
     root_scores = []
     for piece, x, y in get_all_moves(board, ai_color):
         from_x, from_y = piece.x, piece.y
         captured = isinstance(board[x][y], ChessPiece)
         board.make_move(piece, x, y, keep_history=True)
-        score, rest_pv = minimax(board, board.depth - 1, board.depth, -INF, INF, False, {})
+        score, rest_pv = minimax(board, board.depth - 1, board.depth, -INF, INF, False, {}, tt)
         board.unmake_move(piece)
         full_pv = [(piece, from_x, from_y, x, y, captured)] + rest_pv
-        if score > 9000:
-            score -= 0   # already adjusted inside minimax
         root_scores.append((score, piece, from_x, from_y, x, y, captured, full_pv))
 
     _print_debug(board, root_scores)
